@@ -5,8 +5,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 export const USE_MOCK_API = false;
 
 // On a real device, DON'T use localhost; use your computer's LAN IP.
-// Example: "http://192.168.1.20:8000"
-const BASE_URL = "http://127.0.0.1:8000";
+// Ryleys IP: 192.168.1.142
+const BASE_URL = "http://192.168.1.142:8000";
 
 const TOKEN_KEY = "accessToken";
 
