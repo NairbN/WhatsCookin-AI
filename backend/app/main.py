@@ -1,11 +1,105 @@
+from fastapi import FastAPI, Depends, HTTPException, Header
+from sqlalchemy.orm import Session
+from database import engine, get_db
+from schemas import UserCreate, UserResponse, UserLogin, Token, Recipes
+from models import User, Recipes
+from auth import hash_password, verify_password, create_access_token, verify_token
+from models import Base
 import uvicorn
-from fastapi import FastAPI
 
+# Create all tables
+Base.metadata.create_all(bind=engine)
+
+# Create instance
 app = FastAPI()
 
+# Define a path opperation for the root URL that responds to get requests 
 @app.get("/")
 def root():
-    return {"message": "Whatscookin AI"}
+    return {"message": "Hello world"}
 
+# Endpoint to register
+@app.post("/register", response_model=UserResponse)
+def register(user: UserCreate, db: Session = Depends(get_db)):
+    # Check if the email already exists
+    existing_user = db.query(User).filter(User.email == user.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Hash the password
+    hashed_pw = hash_password(user.password)
+
+    # Create new user
+    new_user = User(
+        name=user.name,
+        email=user.email,
+        password=hashed_pw
+    )
+
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    return new_user
+    
+# Endpoint to login
+@app.post("/login", response_model=Token)
+def login(user: UserLogin, db: Session = Depends(get_db)): # Receives email and password
+    db_user = db.query(User).filter(User.email == user.email).first() # Finds user by email in database
+    if not db_user or not verify_password(user.password, db_user.password): # If user not found OR password doesn't match -> Reject
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    token = create_access_token({"sub": str(db_user.id)}) # Create token with user's ID inside and return it to the user
+    return {"token": token}
+
+# Read the Authorization: Bearer <token> header and extracts/verifies the token and returns loggedin user
+def get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)):
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    token = authorization.replace("Bearer ", "")
+    user_id = verify_token(token)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+# Delete recipes
+@app.delete("/recipes/{recipe_id}", status_code=204)
+def delete_recipes(recipe_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    db_recipe = db.query(Recipes).filter(Recipes.id == recipe_id).first()
+    if not db_recipe:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    if db_recipe.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    db.delete(db_recipe)
+    db.commit()
+
+# Read all recipes for user
+@app.get("/recipes")
+def get_recipes(
+    page: int = 1, # Query parameter, defaults to page 1
+    limit: int = 10, # How many items per page, defaults to 10
+    db: Session = Depends(get_db), 
+    user: User = Depends(get_current_user)
+):
+    # Count total recipes for this user
+    total = db.query(Recipes).filter(Recipes.user_id == user.id).count()
+
+    # Calculate how many to skip
+    skip = (page - 1) * limit # Page 1 skips 0, page 2 skips 10 etc
+    
+    # Get only the recipes for this page
+    recipes = db.query(Recipes).filter(Recipes.user_id == user.id).offset(skip).limit(limit).all() # offset(skip)... SQL magic, skip rows, take y rows
+
+    return {
+        "data": recipes,
+        "page": page,
+        "limit": limit,
+        "total": total # Total count so front end knows how many pages exist
+    }
+
+# Starts server make it accessable on http
 if __name__ == '__main__':
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0:0:0:0", port=8000)
